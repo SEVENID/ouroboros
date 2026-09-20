@@ -23,6 +23,7 @@ from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_
 from ouroboros.observability import new_execution_id  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.tool_policy import CAPABILITY_OMISSION_HEADER, format_capability_omissions, initial_tool_schemas, list_non_core_tools  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.context_retrieval import last_user_query, retrieve_context  # noqa: F401 -- optional pre-LLM context augmentation (no-op when no retriever is registered)
 from ouroboros.llm_claudexor import ModelTurnState
 from ouroboros.model_wait import ModelWaitInterrupted
 from ouroboros.context import build_user_content  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
@@ -478,6 +479,16 @@ def run_llm_loop(
             active_model, active_effort, active_use_local, active_context_mode, round_idx, context_fit_plan = resume_native_loop(
                 tools, saved, messages, llm_trace, accumulated_usage, _owner_msg_seen)
         pending_tool_budget, pending_tool_calls = bool(saved), None
+        # One-time pre-LLM context augmentation. Byte-identical (no-op) when
+        # no retriever is registered; see ouroboros/context_retrieval.py.
+        # Skipped on resume: the original run already applied it.
+        if not saved:
+            _retrieved_ctx = retrieve_context(last_user_query(messages), task_id=task_id)
+            if _retrieved_ctx:
+                messages.append({
+                    "role": "system",
+                    "content": "## Retrieved context\n" + "\n\n".join(_retrieved_ctx),
+                })
         while True:
             if free_redial or pending_tool_budget:
                 free_redial = False  # Tool tails and transport waits retain their logical round.
