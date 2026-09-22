@@ -16,7 +16,12 @@ import logging
 import pathlib
 from typing import Any, Dict, List
 
-from ouroboros.reference_books import BOOK_ENTRYPOINTS, compose_book, load_reference_book
+from ouroboros.reference_books import (
+    BOOK_ENTRYPOINTS,
+    compose_book,
+    compose_book_scoped,
+    load_reference_book,
+)
 from ouroboros.skill_review_status import CRITICAL_ITEMS
 from ouroboros.tools.review_helpers import (
     build_rebuttal_section,
@@ -79,6 +84,57 @@ def _load_governance_artifact(
 # Resolve repo root from this file for source and packaged builds.
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+# Skill-review reference-book scoping. The reviewer only needs the chapters
+# whose sections the review preambles name as "binding"; it does not need the
+# whole map. This is a per-surface NARROWING — every other surface (commit
+# review, preflight, the main context) still assembles the full book via
+# compose_book / load_governance_doc. Chapter keys are the last-two-components
+# of each chapter path (see reference_books._chapter_key).
+_SKILL_REVIEW_BOOK_SCOPE = {
+    "docs/ARCHITECTURE.md": (
+        "architecture/10-key-invariants.md",
+        "architecture/12-host-service-companions-and-chat-ids.md",
+        "architecture/13-external-skills-layer.md",
+    ),
+    "docs/DEVELOPMENT.md": (
+        "development/03-module-size-and-complexity.md",
+        "development/06-rules-by-change-class.md",
+        "development/13-gateway-boundary-pattern.md",
+    ),
+}
+
+
+def _load_scoped_book(repo_root: pathlib.Path, relpath: str) -> str:
+    """Assemble a reference book as entrypoint + named chapters only.
+
+    On any load error (missing file, chapter not a declared member, bad
+    selection) it falls back to the whole book via
+    :func:`_load_governance_artifact` — a strict superset, never less content —
+    so a scoping failure can never silently shrink the reviewer's binding
+    surface. A book entrypoint with no scoped selection also keeps the full
+    book, a loud no-op.
+    """
+    book_id = next(
+        (bid for bid, entrypoint in BOOK_ENTRYPOINTS.items() if entrypoint == relpath),
+        None,
+    )
+    if book_id is None:
+        return _load_governance_artifact(repo_root, relpath)
+    chapter_paths = _SKILL_REVIEW_BOOK_SCOPE.get(relpath)
+    if not chapter_paths:
+        return _load_governance_artifact(repo_root, relpath)
+    try:
+        return compose_book_scoped(
+            load_reference_book(repo_root, book_id), chapter_paths
+        )
+    except (OSError, ValueError) as exc:
+        # Class-level invariant (P2): a scoping failure must never drop
+        # governance content. Fall back to the whole book (a superset --
+        # never less content) instead of an OMISSION marker; a genuinely
+        # unavailable book is still disclosed by _load_governance_artifact.
+        return _load_governance_artifact(repo_root, relpath)
+
+
 
 def _build_review_prompt(
     skill_name: str,
@@ -96,8 +152,8 @@ def _build_review_prompt(
         checklist_section = (
             f"(⚠️ SKILL_REVIEW_ERROR: checklist section missing: {exc})"
         )
-    architecture_text = _load_governance_artifact(_REPO_ROOT, "docs/ARCHITECTURE.md")
-    development_text = _load_governance_artifact(_REPO_ROOT, "docs/DEVELOPMENT.md")
+    architecture_text = _load_scoped_book(_REPO_ROOT, "docs/ARCHITECTURE.md")
+    development_text = _load_scoped_book(_REPO_ROOT, "docs/DEVELOPMENT.md")
     bible_text = _load_governance_artifact(_REPO_ROOT, "BIBLE.md")
     skill_host_context = build_skill_host_context(_REPO_ROOT)
     items_json = json.dumps(list(_SKILL_REVIEW_ITEMS))

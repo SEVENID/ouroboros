@@ -228,6 +228,61 @@ def compose_book(book: ReferenceBook) -> str:
     """Legacy bytes stay exact; chapter source bytes stay exact within the result."""
     return "\n\n".join(source.text for source in (book.entrypoint, *book.chapters))
 
+def _chapter_key(path: object) -> str:
+    """Repo-relative last-two-components key for a chapter path.
+
+    Suffix matching makes a scoped selection robust to whether a chapter's
+    ``source_path`` is recorded as ``docs/<book>/<file>.md`` or
+    ``<book>/<file>.md`` — both key to ``<book>/<file>.md``.
+    """
+    parts = [p for p in str(path).replace("\\", "/").split("/") if p]
+    if not parts:
+        return ""
+    return "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+
+
+def compose_book_scoped(
+    book: ReferenceBook,
+    chapter_paths: list[str] | tuple[str, ...],
+) -> str:
+    """Assemble a reference book as entrypoint plus ONLY the named chapters.
+
+    Unlike :func:`compose_book` (the full book) this delivers a bounded subset
+    for a reviewer that does not need the whole map. The entrypoint and each
+    selected chapter keep their exact source bytes; selected chapters appear in
+    the book's own declaration order (not request order) so the result is
+    byte-stable across rounds for prompt caching.
+
+    Error contract (a scoped view must never silently shrink the binding
+    surface): a non-empty selection against a legacy chapter-less book, an
+    empty selection, or any path that is not a declared chapter of ``book``
+    raises ``ValueError`` naming the unknown path and the available set.
+    """
+    paths = [str(p) for p in chapter_paths]
+    if book.legacy:
+        if paths:
+            raise ValueError(
+                f"compose_book_scoped: {book.book_id!r} is a legacy (chapter-less) "
+                "book; it has no chapter subset to select from"
+            )
+        return book.entrypoint.text
+    if not paths:
+        raise ValueError(
+            "compose_book_scoped: an empty selection is not a scoped view "
+            "(use compose_book for the full book)"
+        )
+    by_key = {_chapter_key(c.source_path): c for c in book.chapters}
+    wanted = {_chapter_key(p) for p in paths}
+    unknown = sorted(w for w in wanted if w not in by_key)
+    if unknown:
+        raise ValueError(
+            f"compose_book_scoped: unknown chapter path(s) {unknown} for "
+            f"{book.book_id!r}; available: {sorted(by_key)}"
+        )
+    selected = [c for c in book.chapters if _chapter_key(c.source_path) in wanted]
+    return "\n\n".join(s.text for s in (book.entrypoint, *selected))
+
+
 
 def overview_book(
     book: ReferenceBook,

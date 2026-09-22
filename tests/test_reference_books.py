@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ouroboros.reference_books import compose_book, load_reference_book, overview_book, read_book_range
+from ouroboros.reference_books import compose_book, compose_book_scoped, load_reference_book, overview_book, read_book_range
 
 
 def sources():
@@ -108,3 +108,44 @@ def test_current_production_books_are_chaptered_and_composition_covers_the_closu
         # PHYSICAL chapter, never a line of the composed book.
         assert f"Source: `{chapter.source_path}`" in view.text
     assert not view.source_complete
+
+
+def test_scoped_composition_is_strict_subset_of_whole_book():
+    """compose_book_scoped returns entrypoint + named chapters only, strictly shorter than the whole book."""
+    repo_root = Path(__file__).resolve().parent.parent
+    for relpath, book_id in [("docs/ARCHITECTURE.md", "architecture"), ("docs/DEVELOPMENT.md", "development")]:
+        from ouroboros.reference_books import BOOK_ENTRYPOINTS
+        book = load_reference_book(repo_root, book_id)
+        assert book.chapters, f"book {book_id} has no chapters"
+        first = book.chapters[0]
+        scoped = compose_book_scoped(book, (first.source_path,))
+        whole = compose_book(book)
+        assert len(scoped) < len(whole), f"scoped is not shorter than whole for {book_id}"
+        assert first.text[:80] in scoped  # selected chapter content is present
+        if len(book.chapters) > 1:
+            other = book.chapters[1]
+            assert other.text[:80] not in scoped  # non-selected chapter content absent
+
+
+def test_scoped_composition_rejects_unknown_chapter():
+    """compose_book_scoped raises ValueError when given a path not declared in the book."""
+    repo_root = Path(__file__).resolve().parent.parent
+    book = load_reference_book(repo_root, "architecture")
+    with pytest.raises(ValueError, match="unknown chapter path"):
+        compose_book_scoped(book, ("docs/architecture/nonexistent-chapter.md",))
+
+
+def test_scoped_book_falls_back_to_whole_book_on_bad_chapter():
+    """_load_scoped_book falls back to the whole book (superset) when the scoped selection is invalid."""
+    import ouroboros.skill_review_prompt as srp
+
+    repo_root = Path(__file__).resolve().parent.parent
+    for relpath in srp._SKILL_REVIEW_BOOK_SCOPE:
+        original = srp._SKILL_REVIEW_BOOK_SCOPE[relpath]
+        try:
+            srp._SKILL_REVIEW_BOOK_SCOPE[relpath] = ("docs/architecture/nonexistent-chapter.md",)
+            result = srp._load_scoped_book(repo_root, relpath)
+            whole = srp._load_governance_artifact(repo_root, relpath)
+            assert result == whole, f"fallback for {relpath} did not return the whole book"
+        finally:
+            srp._SKILL_REVIEW_BOOK_SCOPE[relpath] = original
